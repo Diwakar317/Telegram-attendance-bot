@@ -223,20 +223,41 @@ def deactivate_user(message):
         if known_user.role == "HR":
             try:
                 _, emp_id = list(map(lambda x: x.strip(), message.text.split("\n")))
+                print(f"[DEACTIVATE] HR {known_user.employee_id} requested deactivation for: {emp_id}")
                 user = User.get_by_emp_id(emp_id)
+                print(f"[DEACTIVATE] User found: {user}")
                 if user:
+                    if not user.is_active:
+                        bot.reply_to(
+                            message,
+                            "User is already deactivated.",
+                            parse_mode="MarkdownV2",
+                        )
+                        print(f"[DEACTIVATE] User {emp_id} already deactivated.")
+                        return
                     user.is_active = False
                     db_session.add(user)
-                    db_session.commit()
-                    bot.reply_to(
-                        message, "User has been deactivated", parse_mode="MarkdownV2"
-                    )
+                    try:
+                        db_session.commit()
+                        bot.reply_to(
+                            message, "User has been deactivated", parse_mode="MarkdownV2"
+                        )
+                        print(f"[DEACTIVATE] User {emp_id} deactivated successfully.")
+                    except Exception as db_exc:
+                        db_session.rollback()
+                        bot.reply_to(
+                            message,
+                            f"Database error during deactivation: {db_exc}",
+                            parse_mode="MarkdownV2",
+                        )
+                        print(f"[DEACTIVATE] DB error: {db_exc}")
                 else:
                     bot.reply_to(
                         message,
-                        "Employee doesn't exist or deactivated",
+                        "Employee doesn't exist or is already deactivated",
                         parse_mode="MarkdownV2",
                     )
+                    print(f"[DEACTIVATE] No user found for {emp_id}.")
             except ValueError:
                 bot.reply_to(
                     message,
@@ -244,10 +265,13 @@ def deactivate_user(message):
                     "example\n/deactive\nemployee ID",
                     parse_mode="MarkdownV2",
                 )
+                print("[DEACTIVATE] ValueError: Incorrect command format.")
         else:
             bot.reply_to(message, "Sorry!! you can't use this command")
+            print(f"[DEACTIVATE] Non-HR user {known_user.employee_id} tried to deactivate.")
     else:
         bot.reply_to(message, "You are not yet logged in")
+        print("[DEACTIVATE] Command issued by non-logged-in user.")
 
 
 # Reactivate user with their employeeID
@@ -309,47 +333,53 @@ def handle_attendance_selfie(message):
                 }
             )
 
-        # Add face recognition on message.photo[2]; which is a good quality image
+        # Add facial recognition on message.photo[2] (best quality image) in future
 
         if last_attendance:
             # if a attendance is already present for today
             if last_attendance.selfie_time and last_attendance.location_time:
                 # if the last record already have a selfie & location; create a new record
-                new_attendance(
-                    user_id=known_user.id, selfie=pictures, selfie_time=curr_time
-                )
-                bot.reply_to(
-                    message,
-                    "Selfie has been has been added, Please share your location for attendance",
-                )
-
-            elif last_attendance.selfie_time:
-                # if already selfie is present
-                if (
-                    curr_time - last_attendance.selfie_time
-                ).seconds > SELFIE_LOCATION_DELAY:
-                    # but the slack time is already passed
+                try:
                     new_attendance(
                         user_id=known_user.id, selfie=pictures, selfie_time=curr_time
                     )
+                    print(f"[ATTENDANCE] New selfie record created for user {known_user.id} at {curr_time}")
                     bot.reply_to(
                         message,
-                        f"😩 Oops.. You are unable to send location with in <b>{SELFIE_LOCATION_DELAY / 60:.1f}</b>"
-                        " minutes",
-                        parse_mode="HTML",
+                        "Selfie has been added, Please share your location for attendance",
                     )
-                    bot.send_message(
-                        chat_id,
-                        f"We have added your selfie, Please share your location with in "
-                        f"<b>{SELFIE_LOCATION_DELAY / 60:.1f}</b> minutes for attendance",
-                        parse_mode="HTML",
-                    )
+                except Exception as e:
+                    db_session.rollback()
+                    print(f"[ERROR] Failed to create selfie record: {e}")
+                    bot.reply_to(message, "Error saving attendance. Please try again.")
+
+            elif last_attendance.selfie_time:
+                # if already selfie is present
+                time_diff = (curr_time - last_attendance.selfie_time).total_seconds()
+                if time_diff > SELFIE_LOCATION_DELAY:
+                    # but the slack time is already passed
+                    try:
+                        new_attendance(
+                            user_id=known_user.id, selfie=pictures, selfie_time=curr_time
+                        )
+                        print(f"[ATTENDANCE] New selfie record created for user {known_user.id} after delay at {curr_time}")
+                        bot.reply_to(
+                            message,
+                            f"Oops.. You are unable to send location within <b>{SELFIE_LOCATION_DELAY / 60:.1f}</b> minutes",
+                            parse_mode="HTML",
+                        )
+                        bot.send_message(
+                            chat_id,
+                            f"We have added your selfie, Please share your location within <b>{SELFIE_LOCATION_DELAY / 60:.1f}</b> minutes for attendance",
+                            parse_mode="HTML",
+                        )
+                    except Exception as e:
+                        db_session.rollback()
+                        print(f"[ERROR] Failed to create selfie record after delay: {e}")
+                        bot.reply_to(message, "Error saving attendance. Please try again.")
                 else:
                     # if still have some time left
-                    time_left = (
-                        SELFIE_LOCATION_DELAY
-                        - (curr_time - last_attendance.selfie_time).seconds
-                    )
+                    time_left = SELFIE_LOCATION_DELAY - time_diff
                     bot.reply_to(
                         message,
                         "Selfie has been already received; "
@@ -359,42 +389,58 @@ def handle_attendance_selfie(message):
 
             elif last_attendance.location_time:
                 # if location is already exists
-                if (
-                    curr_time - last_attendance.location_time
-                ).seconds > SELFIE_LOCATION_DELAY:
+                time_diff = (curr_time - last_attendance.location_time).total_seconds()
+                if time_diff > SELFIE_LOCATION_DELAY:
                     # but slack time passed
-                    new_attendance(
-                        user_id=known_user.id, selfie=pictures, selfie_time=curr_time
-                    )
-                    bot.reply_to(
-                        message,
-                        f"😩 Oops.. You are unable to send selfie with in <b>{SELFIE_LOCATION_DELAY / 60:.1f}</b>"
-                        " minutes",
-                        parse_mode="HTML",
-                    )
-                    bot.send_message(
-                        chat_id,
-                        "We have added your selfie, Please share your location with in "
-                        f"<b>{SELFIE_LOCATION_DELAY / 60:.1f}</b> minutes for attendance",
-                        parse_mode="HTML",
-                    )
+                    try:
+                        new_attendance(
+                            user_id=known_user.id, selfie=pictures, selfie_time=curr_time
+                        )
+                        print(f"[ATTENDANCE] New selfie record created for user {known_user.id} after location delay at {curr_time}")
+                        bot.reply_to(
+                            message,
+                            f"Oops.. You are unable to send selfie within <b>{SELFIE_LOCATION_DELAY / 60:.1f}</b> minutes",
+                            parse_mode="HTML",
+                        )
+                        bot.send_message(
+                            chat_id,
+                            "We have added your selfie, Please share your location within "
+                            f"<b>{SELFIE_LOCATION_DELAY / 60:.1f}</b> minutes for attendance",
+                            parse_mode="HTML",
+                        )
+                    except Exception as e:
+                        db_session.rollback()
+                        print(f"[ERROR] Failed to create selfie record after location delay: {e}")
+                        bot.reply_to(message, "Error saving attendance. Please try again.")
                 else:
-                    # selfie sent with in the slack time
+                    # selfie sent within the slack time
                     last_attendance.selfie = pictures
                     last_attendance.selfie_time = curr_time
                     db_session.add(last_attendance)
-                    db_session.commit()
-                    bot.reply_to(message, "Your attendance has been added 👍")
+                    try:
+                        db_session.commit()
+                        print(f"[ATTENDANCE] Updated selfie for user {known_user.id} at {curr_time}")
+                        bot.reply_to(message, "Your attendance has been added 👍")
+                    except Exception as e:
+                        db_session.rollback()
+                        print(f"[ERROR] Failed to update selfie record: {e}")
+                        bot.reply_to(message, "Error updating attendance. Please try again.")
 
         else:
             # if there are no record create a new record
-            new_attendance(
-                user_id=known_user.id, selfie=pictures, selfie_time=curr_time
-            )
-            bot.reply_to(
-                message,
-                "Selfie has been has been added, Please share your location for attendance",
-            )
+            try:
+                new_attendance(
+                    user_id=known_user.id, selfie=pictures, selfie_time=curr_time
+                )
+                print(f"[ATTENDANCE] First selfie record created for user {known_user.id} at {curr_time}")
+                bot.reply_to(
+                    message,
+                    "Selfie has been added, Please share your location for attendance",
+                )
+            except Exception as e:
+                db_session.rollback()
+                print(f"[ERROR] Failed to create first selfie record: {e}")
+                bot.reply_to(message, "Error saving attendance. Please try again.")
 
     else:
         bot.reply_to(message, "You are not yet logged in")
@@ -418,72 +464,89 @@ def handle_attendance_location(message):
             # if a attendance is already present for today
             if last_attendance.selfie_time and last_attendance.location_time:
                 # but both selfie and location has been added; create a new record
-                new_attendance(
-                    user_id=known_user.id, location=location, location_time=curr_time
-                )
-                bot.reply_to(
-                    message,
-                    "Location has been has been added, Please share your selfie for attendance",
-                )
-            elif last_attendance.selfie_time:
-                # and selfie is already present
-                if (
-                    curr_time - last_attendance.selfie_time
-                ).seconds > SELFIE_LOCATION_DELAY:
-                    # location is sent after slack time is over
+                try:
                     new_attendance(
-                        user_id=known_user.id,
-                        location=location,
-                        location_time=curr_time,
+                        user_id=known_user.id, location=location, location_time=curr_time
                     )
+                    print(f"[ATTENDANCE] New location record created for user {known_user.id} at {curr_time}")
                     bot.reply_to(
                         message,
-                        f"😩 Oops.. You are unable to send location with in <b>{SELFIE_LOCATION_DELAY / 60:.1f}</b>"
-                        " minutes",
-                        parse_mode="HTML",
+                        "Location has been added, Please share your selfie for attendance",
                     )
-                    bot.send_message(
-                        chat_id,
-                        "We have added your location, Please share your selfie with in "
-                        f"<b>{SELFIE_LOCATION_DELAY / 60:.1f}</b> minutes for attendance",
-                        parse_mode="HTML",
-                    )
+                except Exception as e:
+                    db_session.rollback()
+                    print(f"[ERROR] Failed to create location record: {e}")
+                    bot.reply_to(message, "Error saving attendance. Please try again.")
+            elif last_attendance.selfie_time:
+                # and selfie is already present
+                time_diff = (curr_time - last_attendance.selfie_time).total_seconds()
+                if time_diff > SELFIE_LOCATION_DELAY:
+                    # location is sent after slack time is over
+                    try:
+                        new_attendance(
+                            user_id=known_user.id,
+                            location=location,
+                            location_time=curr_time,
+                        )
+                        print(f"[ATTENDANCE] New location record created for user {known_user.id} after delay at {curr_time}")
+                        bot.reply_to(
+                            message,
+                            f"Oops.. You are unable to send location within <b>{SELFIE_LOCATION_DELAY / 60:.1f}</b> minutes",
+                            parse_mode="HTML",
+                        )
+                        bot.send_message(
+                            chat_id,
+                            "We have added your location, Please share your selfie within "
+                            f"<b>{SELFIE_LOCATION_DELAY / 60:.1f}</b> minutes for attendance",
+                            parse_mode="HTML",
+                        )
+                    except Exception as e:
+                        db_session.rollback()
+                        print(f"[ERROR] Failed to create location record after delay: {e}")
+                        bot.reply_to(message, "Error saving attendance. Please try again.")
                 else:
-                    # location sent with in the slack time
+                    # location sent within the slack time
                     last_attendance.location = location
                     last_attendance.location_time = curr_time
                     db_session.add(last_attendance)
-                    db_session.commit()
-                    bot.reply_to(message, "Your attendance has been added 👍")
+                    try:
+                        db_session.commit()
+                        print(f"[ATTENDANCE] Updated location for user {known_user.id} at {curr_time}")
+                        bot.reply_to(message, "Your attendance has been added 👍")
+                    except Exception as e:
+                        db_session.rollback()
+                        print(f"[ERROR] Failed to update location record: {e}")
+                        bot.reply_to(message, "Error updating attendance. Please try again.")
             elif last_attendance.location_time:
                 # and location is already present
-                if (
-                    curr_time - last_attendance.location_time
-                ).seconds > SELFIE_LOCATION_DELAY:
+                time_diff = (curr_time - last_attendance.location_time).total_seconds()
+                if time_diff > SELFIE_LOCATION_DELAY:
                     # if location is sent after slack time
-                    new_attendance(
-                        user_id=known_user.id,
-                        location=location,
-                        location_time=curr_time,
-                    )
-                    bot.reply_to(
-                        message,
-                        f"😩 Oops.. You are unable to send selfie with in <b>{SELFIE_LOCATION_DELAY / 60:.1f}</b>"
-                        " minutes",
-                        parse_mode="HTML",
-                    )
-                    bot.send_message(
-                        chat_id,
-                        "We have added your location, Please share your selfie with in "
-                        f"<b>{SELFIE_LOCATION_DELAY / 60:.1f}</b> minutes for attendance",
-                        parse_mode="HTML",
-                    )
+                    try:
+                        new_attendance(
+                            user_id=known_user.id,
+                            location=location,
+                            location_time=curr_time,
+                        )
+                        print(f"[ATTENDANCE] New location record created for user {known_user.id} after selfie delay at {curr_time}")
+                        bot.reply_to(
+                            message,
+                            f"Oops.. You are unable to send selfie within <b>{SELFIE_LOCATION_DELAY / 60:.1f}</b> minutes",
+                            parse_mode="HTML",
+                        )
+                        bot.send_message(
+                            chat_id,
+                            "We have added your location, Please share your selfie within "
+                            f"<b>{SELFIE_LOCATION_DELAY / 60:.1f}</b> minutes for attendance",
+                            parse_mode="HTML",
+                        )
+                    except Exception as e:
+                        db_session.rollback()
+                        print(f"[ERROR] Failed to create location record after selfie delay: {e}")
+                        bot.reply_to(message, "Error saving attendance. Please try again.")
                 else:
                     # if still have some time left
-                    time_left = (
-                        SELFIE_LOCATION_DELAY
-                        - (curr_time - last_attendance.selfie_time).seconds
-                    )
+                    time_left = SELFIE_LOCATION_DELAY - time_diff
                     bot.reply_to(
                         message,
                         "Location has been already received; "
@@ -492,13 +555,19 @@ def handle_attendance_location(message):
                     )
         else:
             # if there are no record create a new record
-            new_attendance(
-                user_id=known_user.id, location=location, location_time=curr_time
-            )
-            bot.reply_to(
-                message,
-                "Location has been has been added, Please share your selfie for attendance",
-            )
+            try:
+                new_attendance(
+                    user_id=known_user.id, location=location, location_time=curr_time
+                )
+                print(f"[ATTENDANCE] First location record created for user {known_user.id} at {curr_time}")
+                bot.reply_to(
+                    message,
+                    "Location has been added, Please share your selfie for attendance",
+                )
+            except Exception as e:
+                db_session.rollback()
+                print(f"[ERROR] Failed to create first location record: {e}")
+                bot.reply_to(message, "Error saving attendance. Please try again.")
     else:
         bot.reply_to(message, "You are not yet logged in")
 
@@ -506,142 +575,10 @@ def handle_attendance_location(message):
 # Download attendance report
 @bot.message_handler(func=lambda msg: msg.text.strip().lower() == "download")
 def download_report(message):
-    chat_id = message.chat.id
-    known_user = User.get_by_chat_id(chat_id)
-    if known_user:
-        curr_time = UTC_from_epoch(message.date)
-        data = list(map(lambda x: x.strip(), message.text.split("\n")))
-        if known_user.role == "HR":
-            if len(data) == 1:
-                start_date = datetime(year=curr_time.year, month=curr_time.month, day=curr_time.day)
-                end_date = datetime(year=curr_time.year, month=curr_time.month, day=curr_time.day,
-                                    hour=23, minute=59, second=59)
-                start_date = to_UTC(start_date)
-                end_date = to_UTC(end_date)
-                attendance_records = Attendance.get_attendance_records(start_date, end_date)
-            elif len(data) == 2 or len(data) == 3:
-                emp_id = None
-                try:
-                    _, dmy = data
-                except ValueError:
-                    _, dmy, emp_id = data
-
-                try:
-                    start_date = datetime.strptime(dmy, "%d %m %Y")
-                    end_date = datetime(year=start_date.year, month=start_date.month, day=start_date.day,
-                                        hour=23, minute=59, second=59)
-                except ValueError:
-                    try:
-                        start_date = datetime.strptime(dmy, "%m %Y")
-                        next_month = start_date.replace(day=28) + timedelta(days=4)
-                        last_day = next_month - timedelta(days=next_month.day)
-                        end_date = datetime(year=start_date.year, month=start_date.month, day=last_day.day,
-                                            hour=23, minute=59, second=59)
-                    except ValueError:
-                        try:
-                            start_date = datetime.strptime(dmy, "%Y")
-                            end_date = datetime(year=start_date.year, month=12, day=31,
-                                                hour=23, minute=59, second=59)
-                        except ValueError:
-                            bot.reply_to(message,
-                                         "Please use command 'download' to get the report; example:\n"
-                                         "download\nDate[Optional] Month[Optional] Year[Optional] "
-                                         "[DD MM YYYY/ MM YYYY/ YYYY]\nemployee ID[Optional]",
-                                         parse_mode="MarkdownV2")
-                            return
-
-                start_date = to_UTC(start_date)
-                end_date = to_UTC(end_date)
-                if emp_id:
-                    user = User.get_by_emp_id(emp_id)
-                    emp_id = user.id
-                attendance_records = Attendance.get_attendance_records(start_date, end_date, emp_id)
-            else:
-                bot.reply_to(message,
-                             "Please use command 'download' to get the report; example:\n"
-                             "download\nDate[Optional] Month[Optional] Year[Optional] "
-                             "[DD MM YYYY/ MM YYYY/ YYYY]\nemployee ID[Optional]",
-                             parse_mode="MarkdownV2")
-                return
-
-            if len(attendance_records) < 1:
-                bot.reply_to(message, "No attendance record to download")
-                return
-
-            start_date = to_IST(start_date)
-            end_date = to_IST(end_date)
-
-            html_text = f"""
-            <html>
-            <body>
-            <center>
-            <table width='100%' border='2px solid'>
-            <tr>
-            <td colspan='6' style='text-align:center;font-weight:bold;'>Attendance Report</td>
-            </tr>
-            <tr>
-            <td colspan='3'>Start Date: {start_date.strftime('%d-%B-%Y')}</td>
-            <td colspan='3'>End Date: {end_date.strftime('%d-%B-%Y')}</td>
-            </tr>
-            <tr>
-            <th width='5%'>Sl. No.</th>
-            <th width='20%'>Employee ID</th>
-            <th width='20%'>Selfie Time</th>
-            <th width='20%'>Location Time</th>
-            <th width='20%'>Location</th>
-            <th width='*'>Time Diff</th>
-            </tr>
-            """
-
-            file_name = f"Attendance-{message.date}"
-            ctr = 0
-            last_record = None
-            for record in attendance_records:
-                if ctr % 2 == 0:
-                    last_record = record
-                    user = User.get_by_user_id(last_record.user_id, only_active=False)
-                    html_text += f"""
-                    <tr>
-                        <td>{ctr + 1}</td>
-                        <td>{user.employee_id}</td>
-                        <td>{to_IST(last_record.selfie_time).strftime("%d-%m-%Y %H:%M")}</td>
-                        <td>{to_IST(last_record.location_time).strftime("%d-%m-%Y %H:%M")}</td>
-                        <td>Long: {last_record.location["longitude"]}, Lat: {last_record.location["latitude"]}</td>
-                        <td></td>
-                    </tr>
-                    """
-                else:
-                    user = User.get_by_user_id(record.user_id, only_active=False)
-                    time_diff = time_difference(
-                        to_IST(record.selfie_time),
-                        to_IST(last_record.selfie_time),
-                        formatted=True,
-                    )
-                    html_text += f"""
-                    <tr>
-                        <td>{ctr + 1}</td>
-                        <td>{user.employee_id}</td>
-                        <td>{to_IST(record.selfie_time).strftime("%d-%m-%Y %H:%M")}</td>
-                        <td>{to_IST(record.location_time).strftime("%d-%m-%Y %H:%M")}</td>
-                        <td>Long: {record.location["longitude"]}, Lat: {record.location["latitude"]}</td>
-                        <td>{time_diff}</td>
-                    </tr>
-                    """
-                ctr += 1
-
-            html_text += "</table></center></body></html>"
-
-            file = open(f"{file_name}.html", "wb")
-            file.write(html_text.encode())
-            file.close()
-
-            pdfkit.from_file(f"{file_name}.html", f"{file_name}.pdf")
-            with open(f"{file_name}.pdf", "rb") as file:
-                bot.send_document(known_user.last_chat_id, document=file, reply_to_message_id=message.id)
-
-            os.remove(f"{file_name}.html")
-            os.remove(f"{file_name}.pdf")
-
+    bot.reply_to(
+        message,
+        "This feature is under development; Please contact your administrator for assistance",
+    )
 
 
 # When user send any message except the commands, picture or location (Fallback State)
@@ -653,43 +590,10 @@ def echo_all(message):
     )
 
 
-bot.infinity_polling()
-
-
-# @bot.message_handler(commands=['menu'])
-# @bot.message_handler(func=lambda msg: msg.text in ["menu"])
-# # import argparse
-# from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
-
-# # parser = argparse.ArgumentParser(description="")
-# # parser.add_argument("-ch")
-
-# def show_menu(message):
-#     chat_id = message.chat.id
-#     known_user = User.get_by_chat_id(chat_id)
-#     if known_user:
-#         if known_user.role == "HR":
-#             menu_main = [
-#                 [InlineKeyboardButton('Create Users', callback_data='m1')],
-#                 [InlineKeyboardButton('Reset Password', callback_data='m2')]
-#             ]
-#             reply_markup = InlineKeyboardMarkup(menu_main)
-#             bot.reply_to(message, "Here is your menu", parse_mode="MarkdownV2", reply_markup=reply_markup)
-#         else:
-#             bot.reply_to(
-#                 message,
-#                 f"we will come to this ----- ---------------------------------",
-#                 parse_mode="MarkdownV2"
-#             )
-#     else:
-#         bot.reply_to(message, "You are not yet logged in", parse_mode="MarkdownV2")
-
-
-# @bot.callback_query_handler(func=lambda msg: True)
-# def test_chosen(message):
-#     print(message)
-
-
-
-
-# bot.send_message(1887658587, "Bot Restarted")
+print("[BOT] Telegram Attendance Bot is starting...")
+try:
+    bot.infinity_polling()
+except Exception as e:
+    print(f"[BOT] Telegram Attendance Bot stopped due to error: {e}")
+else:
+    print("[BOT] Telegram Attendance Bot stopped.")

@@ -18,4 +18,4 @@ SUPER_HR = {
     "is_pwd_expired": False,
 }
 
-SELFIE_LOCATION_DELAY = 120  # Delay time in seconds between sending selfie & location
+SELFIE_LOCATION_DELAY = 60  # Delay time in seconds between sending selfie & location

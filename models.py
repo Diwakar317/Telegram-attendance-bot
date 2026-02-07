@@ -103,15 +103,6 @@ class Attendance(Base):
         :param user_id: user ID of user
         :param timestamp: UTC timestamp
         """
-        # For other databases -- not tested yet
-        # return db_session.query(cls).filter(
-        #     cls.user_id == user_id,
-        #     or_(
-        #         cls.selfie_time.date() == timestamp.date(),
-        #         cls.selfie_time.date() == timestamp.date()
-        #     )
-        # ).desc().first()
-
         # For sqlite
         return (
             db_session.query(cls)
