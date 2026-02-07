@@ -8,37 +8,9 @@ from db_backend import db_session
 from helpers import UTC_from_epoch, get_hashed, time_difference, to_IST, to_UTC
 from models import Attendance, User
 from settings import BOT_TOKEN, SELFIE_LOCATION_DELAY
-import math
-# from settings import OFFICE_LAT, OFFICE_LNG, OFFICE_RADIUS_METERS
-from settings import OFFICE_LAT, OFFICE_LNG, OFFICE_RADIUS_METERS, MIN_LIVE_LOCATION_DURATION
-REQUIRED_LIVE_UPDATES = 2
-
-# store temporary live samples
-live_location_samples = {}  # {user_id: count}
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-def is_within_office(lat, lng):
-    """
-    Returns True if user is inside the allowed office radius.
-    Uses Haversine formula to calculate distance.
-    """
-    R = 6371000  # Earth radius in meters
-
-    lat1 = math.radians(lat)
-    lon1 = math.radians(lng)
-    lat2 = math.radians(OFFICE_LAT)
-    lon2 = math.radians(OFFICE_LNG)
-
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-    distance = R * c
-
-    return distance <= OFFICE_RADIUS_METERS
 
 # Create a new attendance record
 def new_attendance(
@@ -61,8 +33,7 @@ def new_attendance(
         db_session.add(attendance)
         db_session.commit()
     else:
-        # AssertionError("Either selfie or location required")
-        raise AssertionError("Either selfie or location required")
+        AssertionError("Either selfie or location required")
 
 
 # When user starts a flow; welcome them
@@ -481,27 +452,6 @@ def handle_attendance_location(message):
     chat_id = message.chat.id
     known_user = User.get_by_chat_id(chat_id)
     if known_user:
-            # 🛰️ LIVE LOCATION ENFORCEMENT
-        live_period = getattr(message.location, "live_period", None)
-
-        # ❌ Reject static/pinned location
-        if live_period is None:
-            bot.reply_to(
-                message,
-                "❌ Static location not allowed.\nPlease share LIVE location for attendance."
-            )
-            print(f"[SECURITY] Static location rejected for user {known_user.id}")
-            return
-
-        # ❌ Reject if live duration too short
-        if live_period < MIN_LIVE_LOCATION_DURATION:
-            bot.reply_to(
-                message,
-                f"❌ Live location too short.\nPlease share for at least {MIN_LIVE_LOCATION_DURATION} seconds."
-            )
-            print(f"[SECURITY] Live duration too short ({live_period}s) for user {known_user.id}")
-            return
-
         curr_time = UTC_from_epoch(message.date)
         last_attendance = Attendance.get_last_attendance_record(
             known_user.id, curr_time
@@ -510,19 +460,6 @@ def handle_attendance_location(message):
             "longitude": message.location.longitude,
             "latitude": message.location.latitude,
         }
-        # 🌍 GEO-FENCING CHECK
-        user_lat = message.location.latitude
-        user_lng = message.location.longitude
-
-        if not is_within_office(user_lat, user_lng):
-            bot.reply_to(
-                message,
-                "❌ You are outside the office premises.\nAttendance rejected."
-            )
-            print(f"[SECURITY] Fake/remote location attempt by user {known_user.id}: {user_lat}, {user_lng}")
-            return
-
-
         if last_attendance:
             # if a attendance is already present for today
             if last_attendance.selfie_time and last_attendance.location_time:
